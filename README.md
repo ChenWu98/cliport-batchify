@@ -1,12 +1,16 @@
-# CLIPort
+# CLIPort-Batchify
 
-[**CLIPort: What and Where Pathways for Robotic Manipulation**](https://arxiv.org/pdf/2109.12098.pdf)  
-[Mohit Shridhar](https://mohitshridhar.com/), [Lucas Manuelli](http://lucasmanuelli.com/), [Dieter Fox](https://homes.cs.washington.edu/~fox/)  
-[CoRL 2021](https://www.robot-learning.org/) 
+This repository implements the minibatch training (i.e., you can set batch_size > 1 now) for 
+[CLIPort: What and Where Pathways for Robotic Manipulation](https://arxiv.org/abs/2109.12098). I have also added support for higher CUDA, Pytorch, and Pytorch Lightning versions. In general, this repository allows you to benefit from better hardware and software when training CLIPort. 
+
+For questions and issues beyond the [original repository](https://github.com/cliport/cliport), you can create
+[issues](https://github.com/ChenWu98/cliport-batchify/issues)
+or email [me](https://github.com/ChenWu98).
+
+Below is the original README.md.
+<HR>
 
 CLIPort is an end-to-end imitation-learning agent that can learn a single language-conditioned policy for various tabletop tasks. The framework combines the broad semantic understanding (_what_) of [CLIP](https://openai.com/blog/clip/) with the spatial precision (_where_) of [TransporterNets](https://transporternets.github.io/) to learn generalizable skills from limited training demonstrations.
-
-For the latest updates, see: [cliport.github.io](https://cliport.github.io)
 
 ![](media/sim_tasks.gif)
 
@@ -406,6 +410,7 @@ Changes: Used as is in [unet.py](cliport/models/core/unet.py). Note: This part o
 }
 ```
 
-## Questions or Issues?
-
-Please file an issue with the issue tracker.  
+## Issues?
+For questions and issues beyond the [original repository](https://github.com/cliport/cliport), you can create
+[issues](https://github.com/ChenWu98/cliport-batchify/issues)
+or email [me](https://github.com/ChenWu98).
