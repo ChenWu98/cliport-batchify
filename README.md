@@ -7,8 +7,36 @@ This repo is still under development, and I will keep updating it. For questions
 [issues](https://github.com/ChenWu98/cliport-batchify/issues)
 or email [me](https://github.com/ChenWu98). 
 
+## Installation (overriding the original repo)
+1. Create environment: 
+```bash
+conda create -n cliport python=3.8
+```
+2. Activate environment: 
+```bash
+conda activate cliport
+```
+3. Clone CLIPort-bathify
+```bash
+git clone https://github.com/ChenWu98/cliport-batchify.git
+```
+4. Install from requirements: 
+```bash
+conda install pip
+cd cliport-batchify
+pip install -r requirements.txt
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+pip install pytorch-lightning==1.9.5
+python setup.py develop
+```
+
+<br>
+
 Below is the original README.md.
+
 <HR>
+
+<br>
 
 CLIPort is an end-to-end imitation-learning agent that can learn a single language-conditioned policy for various tabletop tasks. The framework combines the broad semantic understanding (_what_) of [CLIP](https://openai.com/blog/clip/) with the spatial precision (_where_) of [TransporterNets](https://transporternets.github.io/) to learn generalizable skills from limited training demonstrations.
 
@@ -16,7 +44,7 @@ CLIPort is an end-to-end imitation-learning agent that can learn a single langua
 
 ## Guides
 
-- Getting Started: [Installation](#installation), [Quick Tutorial](#quickstart), [Checkpoints & Objects](#download), [Hardware Requirements](#hardware-requirements), [Model Card](model-card.md)
+- Getting Started: [Installation](#installation-this-repo), [Quick Tutorial](#quickstart), [Checkpoints & Objects](#download), [Hardware Requirements](#hardware-requirements), [Model Card](model-card.md)
 - Data Generation: [Dataset](#dataset-generation), [Tasks](cliport/tasks)
 - Training & Evaluation: [Single Task](#single-task-training--evaluation), [Multi Task](#multi-task-training--evaluation)
 - Miscellaneous: [Notebooks](#notebooks), [Docker Guide](#docker-guide), [Disclaimers](#disclaimers--limitations), [Real-Robot Training FAQ](#real-robot-training-faq), [Recording Videos](#recording-videos)
