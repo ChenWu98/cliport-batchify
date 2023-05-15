@@ -1,11 +1,11 @@
 # CLIPort-Batchify
 
 This repository implements the minibatch training (i.e., you can set batch_size > 1 now) for 
-[CLIPort: What and Where Pathways for Robotic Manipulation](https://arxiv.org/abs/2109.12098). I have also added support for higher CUDA, Pytorch, and Pytorch Lightning versions. In general, this repository allows you to benefit from better hardware and software when training CLIPort. 
+[CLIPort: What and Where Pathways for Robotic Manipulation](https://arxiv.org/abs/2109.12098). I have also added support for higher CUDA, Pytorch, and Pytorch Lightning versions. In general, this repo allows you to benefit from better hardware and software when training CLIPort. 
 
-For questions and issues beyond the [original repository](https://github.com/cliport/cliport), you can create
+This repo is still under development, and I will keep updating it. For questions and issues beyond the [original repo](https://github.com/cliport/cliport), you can create
 [issues](https://github.com/ChenWu98/cliport-batchify/issues)
-or email [me](https://github.com/ChenWu98).
+or email [me](https://github.com/ChenWu98). 
 
 Below is the original README.md.
 <HR>
