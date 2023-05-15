@@ -59,6 +59,8 @@ class TransportImageGoal(nn.Module):
 
     def correlate(self, in0, in1, softmax):
         """Correlate two input tensors."""
+        # The batch size IS 1 in this function, but the project code is batched.
+        assert in0.shape[0] == 1
         output = F.conv2d(in0, in1, padding=(self.pad_size, self.pad_size))
         output = F.interpolate(output, size=(in0.shape[-2], in0.shape[-1]), mode='bilinear')
         output = output[:,:,self.pad_size:-self.pad_size, self.pad_size:-self.pad_size]
@@ -66,42 +68,57 @@ class TransportImageGoal(nn.Module):
             output_shape = output.shape
             output = output.reshape((1, np.prod(output.shape)))
             output = F.softmax(output, dim=-1)
-            output = output.reshape(output_shape[1:])
+            output = output.view(output_shape)
         return output
 
     def forward(self, inp_img, goal_img, p, softmax=True):
         """Forward pass."""
 
         # Input image.
-        img_unprocessed = np.pad(inp_img, self.padding, mode='constant')
-        input_data = img_unprocessed
-        in_shape = (1,) + input_data.shape
-        input_data = input_data.reshape(in_shape)
-        in_tensor = torch.from_numpy(input_data.copy()).to(dtype=torch.float, device=self.device)
-        in_tensor = in_tensor.permute(0, 3, 1, 2)
+        pytorch_padding = tuple([int(x) for x in self.padding[::-1].flatten()])
+        in_tensor = F.pad(inp_img, pytorch_padding, mode='constant')  # [B W H 6]
+        in_tensor = in_tensor.permute(0, 3, 1, 2)  # [B 6 W H]
 
         # Goal image.
-        goal_tensor = np.pad(goal_img, self.padding, mode='constant')
-        goal_shape = (1,) + goal_tensor.shape
-        goal_tensor = goal_tensor.reshape(goal_shape)
-        goal_tensor = torch.from_numpy(goal_tensor.copy()).to(dtype=torch.float, device=self.device)
-        goal_tensor = goal_tensor.permute(0, 3, 1, 2)
+        goal_tensor = F.pad(goal_img, pytorch_padding, mode='constant')  # [B W H 6]
+        goal_tensor = goal_tensor.permute(0, 3, 1, 2)  # [B 6 W H]
 
         # Rotation pivot.
-        pv = np.array([p[0], p[1]]) + self.pad_size
+        pv = p + self.pad_size
         hcrop = self.pad_size
 
         # Cropped input features.
-        in_crop = in_tensor.repeat(self.n_rotations, 1, 1, 1)
-        in_crop = self.rotator(in_crop, pivot=pv)
+        in_crop = self.rotator(
+            x_list=[in_tensor for _ in range(self.n_rotations)], 
+            pivot_list=[pv for _ in range(self.n_rotations)]
+        )  # list of [B 6 W H]
+        B = in_tensor.shape[0]
+        in_crop = [
+            torch.stack(
+                [
+                    _in_crop[i, :, pv[i][0]-hcrop:pv[i][0]+hcrop, pv[i][1]-hcrop:pv[i][1]+hcrop]
+                    for i in range(B)
+                ]
+            )
+            for _in_crop in in_crop
+        ]
         in_crop = torch.cat(in_crop, dim=0)
-        in_crop = in_crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
 
         # Cropped goal features.
-        goal_crop = goal_tensor.repeat(self.n_rotations, 1, 1, 1)
-        goal_crop = self.rotator(goal_crop, pivot=pv)
+        goal_crop = self.rotator(
+            x_list=[goal_tensor for _ in range(self.n_rotations)], 
+            pivot_list=[pv for _ in range(self.n_rotations)]
+        )
+        goal_crop = [
+            torch.stack(
+                [
+                    _goal_crop[i, :, pv[i][0]-hcrop:pv[i][0]+hcrop, pv[i][1]-hcrop:pv[i][1]+hcrop]
+                    for i in range(B)
+                ]
+            )
+            for _goal_crop in goal_crop
+        ]
         goal_crop = torch.cat(goal_crop, dim=0)
-        goal_crop = goal_crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
 
         in_logits = self.key_resnet(in_tensor)
         goal_logits = self.goal_resnet(goal_tensor)
@@ -125,5 +142,14 @@ class TransportImageGoal(nn.Module):
         # goal_crop = torch.cat(goal_crop, dim=0)
         # goal_crop = goal_crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
 
-        return self.correlate(goal_x_in_logits, goal_x_kernel, softmax)
+        if False:
+            output = []
+            goal_x_kernel = goal_x_kernel.reshape(self.n_rotations, B, *goal_x_kernel.shape[1:])
+            for b in range(B):
+                output.append(self.correlate(goal_x_in_logits[b].unsqueeze(0), goal_x_kernel[:, b], softmax))
+            output = torch.cat(output, dim=0)
+
+            return output  # [B R W H]
+        else:
+            output = self.batch_correlate(goal_x_in_logits, goal_x_kernel, softmax)
 

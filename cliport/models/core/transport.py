@@ -51,6 +51,8 @@ class Transport(nn.Module):
 
     def correlate(self, in0, in1, softmax):
         """Correlate two input tensors."""
+        # The batch size IS 1 in this function, but the project code is batched.
+        assert in0.shape[0] == 1
         output = F.conv2d(in0, in1, padding=(self.pad_size, self.pad_size))
         output = F.interpolate(output, size=(in0.shape[-2], in0.shape[-1]), mode='bilinear')
         output = output[:,:,self.pad_size:-self.pad_size, self.pad_size:-self.pad_size]
@@ -58,7 +60,31 @@ class Transport(nn.Module):
             output_shape = output.shape
             output = output.reshape((1, np.prod(output.shape)))
             output = F.softmax(output, dim=-1)
-            output = output.reshape(output_shape[1:])
+            output = output.view(output_shape)
+        return output
+    
+    def batch_correlate(self, in0, in1, softmax):
+        """Correlate two input tensors with grouped convolutions."""
+        # in0: [B D W H]
+        # in1: [R * B D W H]
+        B = in0.shape[0]
+        in1 = in1.view(self.n_rotations, B, *in1.shape[1:])  # [R B D W H]
+        in1 = in1.permute(1, 0, 2, 3, 4)  # [B R D W H]
+        in1 = in1.reshape(B * self.n_rotations, *in1.shape[2:])  # [B * R D W H]
+        output = F.conv2d(
+            in0.reshape(1, B * in0.shape[1], in0.shape[2], in0.shape[3]),  # [1 B*D W H]
+            in1,  # [B * R D W H]
+            padding=(self.pad_size, self.pad_size),
+            groups=B,
+        )  # [1 B * R W H]
+        output = output.view(B, self.n_rotations, output.shape[-2], output.shape[-1])  # [B R W H]
+        output = F.interpolate(output, size=(in0.shape[-2], in0.shape[-1]), mode='bilinear')
+        output = output[:,:,self.pad_size:-self.pad_size, self.pad_size:-self.pad_size]
+        if softmax:
+            output_shape = output.shape
+            output = output.reshape(B, np.prod(output.shape[1:]))
+            output = F.softmax(output, dim=-1)
+            output = output.view(output_shape)
         return output
 
     def transport(self, in_tensor, crop):
@@ -68,23 +94,31 @@ class Transport(nn.Module):
 
     def forward(self, inp_img, p, softmax=True):
         """Forward pass."""
-        img_unprocessed = np.pad(inp_img, self.padding, mode='constant')
-        input_data = img_unprocessed
-        in_shape = (1,) + input_data.shape
-        input_data = input_data.reshape(in_shape) # [B W H D]
-        in_tensor = torch.from_numpy(input_data).to(dtype=torch.float, device=self.device)
+        pytorch_padding = tuple([int(x) for x in self.padding[::-1].flatten()])
+        in_tensor = F.pad(inp_img, pytorch_padding, mode='constant')  # [B W H 6]
 
         # Rotation pivot.
-        pv = np.array([p[0], p[1]]) + self.pad_size
+        pv = p + self.pad_size
 
         # Crop before network (default from Transporters CoRL 2020).
         hcrop = self.pad_size
         in_tensor = in_tensor.permute(0, 3, 1, 2) # [B D W H]
 
-        crop = in_tensor.repeat(self.n_rotations, 1, 1, 1)
-        crop = self.rotator(crop, pivot=pv)
+        crop = self.rotator(
+            x_list=[in_tensor for _ in range(self.n_rotations)], 
+            pivot_list=[pv for _ in range(self.n_rotations)]
+        )
+        B = in_tensor.shape[0]
+        crop = [
+            torch.stack(
+                [
+                    _crop[i, :, pv[i][0]-hcrop:pv[i][0]+hcrop, pv[i][1]-hcrop:pv[i][1]+hcrop]
+                    for i in range(B)
+                ]
+            )
+            for _crop in crop
+        ]
         crop = torch.cat(crop, dim=0)
-        crop = crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
 
         logits, kernel = self.transport(in_tensor, crop)
 
@@ -98,5 +132,14 @@ class Transport(nn.Module):
         # kernel = crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
         # kernel = crop[:, :, p[0]:(p[0] + self.crop_size), p[1]:(p[1] + self.crop_size)]
 
-        return self.correlate(logits, kernel, softmax)
+        if False:
+            output = []
+            kernel = kernel.reshape(self.n_rotations, B, *kernel.shape[1:])
+            for b in range(B):
+                output.append(self.correlate(logits[b].unsqueeze(0), kernel[:, b], softmax))
+            output = torch.cat(output, dim=0)
+
+            return output  # [B R W H]
+        else:
+            return self.batch_correlate(logits, kernel, softmax)
 

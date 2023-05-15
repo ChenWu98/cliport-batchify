@@ -43,7 +43,9 @@ class Fusion(nn.Module):
             x2 = x2_proj(x2)
 
         x2 = x2.unsqueeze(-1).unsqueeze(-1)
-        x2 = x2.repeat(x1.shape[0], 1, x1.shape[-2], x1.shape[-1])
+        assert x1.shape[0] % x2.shape[0] == 0
+        repeat = x1.shape[0] // x2.shape[0]
+        x2 = x2.repeat(repeat, 1, x1.shape[-2], x1.shape[-1])
         return x2
 
     def forward(self, x1, x2, x2_mask=None, x2_proj=None):

@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from cliport.utils import utils
 from cliport.agents.transporter import OriginalTransporterAgent
@@ -42,10 +43,11 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
         inp_img = frame['img']
         goal_img = goal['img']
         p0, p0_theta = frame['p0'], frame['p0_theta']
+        attn_label = frame['attn_label']
 
         inp = {'inp_img': inp_img, 'goal_img': goal_img}
         out = self.attn_forward(inp, softmax=False)
-        return self.attn_criterion(backprop, compute_err, inp, out, p0, p0_theta)
+        return self.attn_criterion(backprop, compute_err, inp, out, p0, p0_theta, attn_label)
 
     def trans_forward(self, inp, softmax=True):
         inp_img = inp['inp_img']
@@ -60,10 +62,11 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
         goal_img = goal['img']
         p0 = frame['p0']
         p1, p1_theta = frame['p1'], frame['p1_theta']
+        transport_label = frame['transport_label']
 
         inp = {'inp_img': inp_img, 'goal_img': goal_img, 'p0': p0}
         out = self.trans_forward(inp, softmax=False)
-        err, loss = self.transport_criterion(backprop, compute_err, inp, out, p0, p1, p1_theta)
+        err, loss = self.transport_criterion(backprop, compute_err, inp, out, p0, p1, p1_theta, transport_label)
         return loss, err
 
     def training_step(self, batch, batch_idx):
@@ -76,7 +79,7 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
         step = self.total_steps + 1
         loss0, err0 = self.attn_training_step(frame, goal)
         if isinstance(self.transport, Attention):
-            loss1, err1 = self.attn_training_step(frame, goal)
+            raise NotImplementedError()
         else:
             loss1, err1 = self.transport_training_step(frame, goal)
         total_loss = loss0 + loss1
@@ -85,7 +88,7 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
         self.log('tr/loss', total_loss)
         self.total_steps = step
 
-        self.trainer.train_loop.running_loss.append(total_loss)
+        # self.trainer.train_loop.running_loss.append(total_loss)
 
         self.check_save_iteration()
 
@@ -112,7 +115,7 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
         loss1 /= self.val_repeats
         val_total_loss = loss0 + loss1
 
-        self.trainer.evaluation_loop.trainer.train_loop.running_loss.append(val_total_loss)
+        # self.trainer.evaluation_loop.trainer.train_loop.running_loss.append(val_total_loss)
 
         return dict(
             val_loss=val_total_loss,
@@ -127,25 +130,43 @@ class ImageGoalTransporterAgent(OriginalTransporterAgent):
     def act(self, obs, info=None, goal=None):  # pylint: disable=unused-argument
         """Run inference and return best action given visual observations."""
         # Get heightmap from RGB-D images.
+        # TODO: batch (should be compatible with the modified interface)
         img = self.test_ds.get_image(obs)
         goal_img = self.test_ds.get_image(goal[0])
 
         # Attention model forward pass.
-        pick_conf = self.attention.forward(img, goal_img)
+        pick_conf = self.attention.forward(
+             torch.from_numpy(img).to(dtype=torch.float, device=self.device).unsqueeze(0), 
+             torch.from_numpy(goal_img).to(dtype=torch.float, device=self.device).unsqueeze(0)
+        )
+        assert pick_conf.dim() == 4
+        pick_conf = pick_conf.permute(0, 2, 3, 1)
         pick_conf = pick_conf.detach().cpu().numpy()
-        argmax = np.argmax(pick_conf)
-        argmax = np.unravel_index(argmax, shape=pick_conf.shape)
-        p0_pix = argmax[:2]
-        p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+        argmax = np.argmax(pick_conf.reshape(pick_conf.shape[0], -1), axis=1)
+        coord0, coord1, coord2 = np.unravel_index(argmax, shape=pick_conf.shape[1:])
+        p0_pix = np.stack([coord0, coord1], axis=1)
+        p0_theta = coord2 * (2 * np.pi / pick_conf.shape[3])
+        assert p0_pix.shape[0] == p0_theta.shape[0] == 1
+        p0_pix = p0_pix[0]
+        p0_theta = p0_theta[0]
 
         # Transport model forward pass.
-        place_conf = self.transport.forward(img, goal_img, p0_pix)
+        place_conf = self.transport.forward(
+            torch.from_numpy(img).to(dtype=torch.float, device=self.device).unsqueeze(0), 
+            torch.from_numpy(goal_img).to(dtype=torch.float, device=self.device).unsqueeze(0),
+            torch.from_numpy(p0_pix).to(dtype=torch.int, device=self.device).unsqueeze(0),
+        )
         place_conf = place_conf.permute(1, 2, 0)
+        assert place_conf.dim() == 4
+        place_conf = place_conf.permute(0, 2, 3, 1)
         place_conf = place_conf.detach().cpu().numpy()
-        argmax = np.argmax(place_conf)
-        argmax = np.unravel_index(argmax, shape=place_conf.shape)
-        p1_pix = argmax[:2]
-        p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+        argmax = np.argmax(place_conf.reshape(place_conf.shape[0], -1), axis=1)
+        coord0, coord1, coord2 = np.unravel_index(argmax, shape=place_conf.shape[1:])
+        p1_pix = np.stack([coord0, coord1], axis=1)
+        p1_theta = coord2 * (2 * np.pi / place_conf.shape[3])
+        assert p1_pix.shape[0] == p1_theta.shape[0] == 1
+        p1_pix = p1_pix[0]
+        p1_theta = p1_theta[0]
 
         # Pixels to end effector poses.
         hmap = img[:, :, 3]

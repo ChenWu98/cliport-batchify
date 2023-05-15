@@ -57,13 +57,16 @@ class TransporterAgent(LightningModule):
 
     def cross_entropy_with_logits(self, pred, labels, reduction='mean'):
         # Lucas found that both sum and mean work equally well
-        x = (-labels * F.log_softmax(pred, -1))
-        if reduction == 'sum':
-            return x.sum()
-        elif reduction == 'mean':
-            return x.mean()
+        if False:
+            x = (-labels * F.log_softmax(pred, -1))
+            if reduction == 'sum':
+                return x.sum()
+            elif reduction == 'mean':
+                return x.mean()
+            else:
+                raise NotImplementedError()
         else:
-            raise NotImplementedError()
+            return F.cross_entropy(pred, labels, reduction=reduction)
 
     def attn_forward(self, inp, softmax=True):
         inp_img = inp['inp_img']
@@ -74,45 +77,38 @@ class TransporterAgent(LightningModule):
     def attn_training_step(self, frame, backprop=True, compute_err=False):
         inp_img = frame['img']
         p0, p0_theta = frame['p0'], frame['p0_theta']
+        attn_label = frame['attn_label']
 
         inp = {'inp_img': inp_img}
         out = self.attn_forward(inp, softmax=False)
-        return self.attn_criterion(backprop, compute_err, inp, out, p0, p0_theta)
+        return self.attn_criterion(backprop, compute_err, inp, out, p0, p0_theta, attn_label)
 
-    def attn_criterion(self, backprop, compute_err, inp, out, p, theta):
-        # Get label.
-        theta_i = theta / (2 * np.pi / self.attention.n_rotations)
-        theta_i = np.int32(np.round(theta_i)) % self.attention.n_rotations
-        inp_img = inp['inp_img']
-        label_size = inp_img.shape[:2] + (self.attention.n_rotations,)
-        label = np.zeros(label_size)
-        label[p[0], p[1], theta_i] = 1
-        label = label.transpose((2, 0, 1))
-        label = label.reshape(1, np.prod(label.shape))
-        label = torch.from_numpy(label).to(dtype=torch.float, device=out.device)
-
+    def attn_criterion(self, backprop, compute_err, inp, out, p, theta, label):
         # Get loss.
         loss = self.cross_entropy_with_logits(out, label)
 
         # Backpropagate.
         if backprop:
             attn_optim = self._optimizers['attn']
-            self.manual_backward(loss, attn_optim)
-            attn_optim.step()
-            attn_optim.zero_grad()
+            self.manual_backward(loss)
+            if (self.total_steps + 1) % self.cfg['train']['accum_grad'] == 0:
+                attn_optim.step()
+                attn_optim.zero_grad()
 
         # Pixel and Rotation error (not used anywhere).
         err = {}
         if compute_err:
             pick_conf = self.attn_forward(inp)
+            assert pick_conf.dim() == 4
+            pick_conf = pick_conf.permute(0, 2, 3, 1)
             pick_conf = pick_conf.detach().cpu().numpy()
-            argmax = np.argmax(pick_conf)
-            argmax = np.unravel_index(argmax, shape=pick_conf.shape)
-            p0_pix = argmax[:2]
-            p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+            argmax = np.argmax(pick_conf.reshape(pick_conf.shape[0], -1), axis=1)
+            coord0, coord1, coord2 = np.unravel_index(argmax, shape=pick_conf.shape[1:])
+            p0_pix = np.stack([coord0, coord1], axis=1)
+            p0_theta = coord2 * (2 * np.pi / pick_conf.shape[3])
 
             err = {
-                'dist': np.linalg.norm(np.array(p) - p0_pix, ord=1),
+                'dist': np.linalg.norm(p.cpu().numpy() - p0_pix, ord=1),
                 'theta': np.absolute((theta - p0_theta) % np.pi)
             }
         return loss, err
@@ -125,50 +121,42 @@ class TransporterAgent(LightningModule):
         return output
 
     def transport_training_step(self, frame, backprop=True, compute_err=False):
+
         inp_img = frame['img']
         p0 = frame['p0']
         p1, p1_theta = frame['p1'], frame['p1_theta']
+        transport_label = frame['transport_label']
 
         inp = {'inp_img': inp_img, 'p0': p0}
         output = self.trans_forward(inp, softmax=False)
-        err, loss = self.transport_criterion(backprop, compute_err, inp, output, p0, p1, p1_theta)
+        err, loss = self.transport_criterion(backprop, compute_err, inp, output, p0, p1, p1_theta, transport_label)
         return loss, err
 
-    def transport_criterion(self, backprop, compute_err, inp, output, p, q, theta):
-        itheta = theta / (2 * np.pi / self.transport.n_rotations)
-        itheta = np.int32(np.round(itheta)) % self.transport.n_rotations
-
-        # Get one-hot pixel label map.
-        inp_img = inp['inp_img']
-        label_size = inp_img.shape[:2] + (self.transport.n_rotations,)
-        label = np.zeros(label_size)
-        label[q[0], q[1], itheta] = 1
-
+    def transport_criterion(self, backprop, compute_err, inp, output, p, q, theta, label):
         # Get loss.
-        label = label.transpose((2, 0, 1))
-        label = label.reshape(1, np.prod(label.shape))
-        label = torch.from_numpy(label).to(dtype=torch.float, device=output.device)
-        output = output.reshape(1, np.prod(output.shape))
+        output = output.reshape(output.shape[0], np.prod(output.shape[1:]))
         loss = self.cross_entropy_with_logits(output, label)
         if backprop:
             transport_optim = self._optimizers['trans']
-            self.manual_backward(loss, transport_optim)
-            transport_optim.step()
-            transport_optim.zero_grad()
+            self.manual_backward(loss)
+            if (self.total_steps + 1) % self.cfg['train']['accum_grad'] == 0:
+                transport_optim.step()
+                transport_optim.zero_grad()
  
         # Pixel and Rotation error (not used anywhere).
         err = {}
         if compute_err:
             place_conf = self.trans_forward(inp)
-            place_conf = place_conf.permute(1, 2, 0)
+            assert place_conf.dim() == 4
+            place_conf = place_conf.permute(0, 2, 3, 1)
             place_conf = place_conf.detach().cpu().numpy()
-            argmax = np.argmax(place_conf)
-            argmax = np.unravel_index(argmax, shape=place_conf.shape)
-            p1_pix = argmax[:2]
-            p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+            argmax = np.argmax(place_conf.reshape(place_conf.shape[0], -1), axis=1)
+            coord0, coord1, coord2 = np.unravel_index(argmax, shape=place_conf.shape[1:])
+            p1_pix = np.stack([coord0, coord1], axis=1)
+            p1_theta = coord2 * (2 * np.pi / place_conf.shape[3])
 
             err = {
-                'dist': np.linalg.norm(np.array(q) - p1_pix, ord=1),
+                'dist': np.linalg.norm(q.cpu().numpy() - p1_pix, ord=1),
                 'theta': np.absolute((theta - p1_theta) % np.pi)
             }
         self.transport.iters += 1
@@ -193,7 +181,7 @@ class TransporterAgent(LightningModule):
         self.log('tr/loss', total_loss)
         self.total_steps = step
 
-        self.trainer.train_loop.running_loss.append(total_loss)
+        # self.trainer.train_loop.running_loss.append(total_loss)
 
         self.check_save_iteration()
 
@@ -202,17 +190,18 @@ class TransporterAgent(LightningModule):
         )
 
     def check_save_iteration(self):
-        global_step = self.trainer.global_step
-        if (global_step + 1) in self.save_steps:
-            self.trainer.run_evaluation()
-            val_loss = self.trainer.callback_metrics['val_loss']
+        global_step = self.total_steps
+        if global_step in self.save_steps:
+            # self.trainer.validate(self)
+            # val_loss = self.trainer.callback_metrics['vl/loss']
             steps = f'{global_step + 1:05d}'
-            filename = f"steps={steps}-val_loss={val_loss:0.8f}.ckpt"
+            # filename = f"steps={steps}-val_loss={val_loss:0.8f}.ckpt"
+            filename = f"steps={steps}.ckpt"
             checkpoint_path = os.path.join(self.cfg['train']['train_dir'], 'checkpoints')
             ckpt_path = os.path.join(checkpoint_path, filename)
             self.trainer.save_checkpoint(ckpt_path)
 
-        if (global_step + 1) % 1000 == 0:
+        if global_step % 1000 == 0:
             # save lastest checkpoint
             # print(f"Saving last.ckpt Epoch: {self.trainer.current_epoch} | Global Step: {self.trainer.global_step}")
             self.save_last_checkpoint()
@@ -242,7 +231,7 @@ class TransporterAgent(LightningModule):
         loss1 /= self.val_repeats
         val_total_loss = loss0 + loss1
 
-        self.trainer.evaluation_loop.trainer.train_loop.running_loss.append(val_total_loss)
+        # self.trainer.evaluation_loop.trainer.train_loop.running_loss.append(val_total_loss)
 
         return dict(
             val_loss=val_total_loss,
@@ -291,26 +280,41 @@ class TransporterAgent(LightningModule):
     def act(self, obs, info=None, goal=None):  # pylint: disable=unused-argument
         """Run inference and return best action given visual observations."""
         # Get heightmap from RGB-D images.
+        # TODO: batch (should be compatible with the modified interface)
         img = self.test_ds.get_image(obs)
 
         # Attention model forward pass.
-        pick_inp = {'inp_img': img}
+        pick_inp = {
+            'inp_img': torch.from_numpy(img).to(dtype=torch.float, device=self.device).unsqueeze(0),
+        }
         pick_conf = self.attn_forward(pick_inp)
+        assert pick_conf.dim() == 4
+        pick_conf = pick_conf.permute(0, 2, 3, 1)
         pick_conf = pick_conf.detach().cpu().numpy()
-        argmax = np.argmax(pick_conf)
-        argmax = np.unravel_index(argmax, shape=pick_conf.shape)
-        p0_pix = argmax[:2]
-        p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+        argmax = np.argmax(pick_conf.reshape(pick_conf.shape[0], -1), axis=1)
+        coord0, coord1, coord2 = np.unravel_index(argmax, shape=pick_conf.shape[1:])
+        p0_pix = np.stack([coord0, coord1], axis=1)
+        p0_theta = coord2 * (2 * np.pi / pick_conf.shape[3])
+        assert p0_pix.shape[0] == p0_theta.shape[0] == 1
+        p0_pix = p0_pix[0]
+        p0_theta = p0_theta[0]
 
         # Transport model forward pass.
-        place_inp = {'inp_img': img, 'p0': p0_pix}
+        place_inp = {
+            'inp_img': torch.from_numpy(img).to(dtype=torch.float, device=self.device).unsqueeze(0), 
+            'p0': torch.from_numpy(p0_pix).to(dtype=torch.int, device=self.device).unsqueeze(0),
+        }
         place_conf = self.trans_forward(place_inp)
-        place_conf = place_conf.permute(1, 2, 0)
+        assert place_conf.dim() == 4
+        place_conf = place_conf.permute(0, 2, 3, 1)
         place_conf = place_conf.detach().cpu().numpy()
-        argmax = np.argmax(place_conf)
-        argmax = np.unravel_index(argmax, shape=place_conf.shape)
-        p1_pix = argmax[:2]
-        p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+        argmax = np.argmax(place_conf.reshape(place_conf.shape[0], -1), axis=1)
+        coord0, coord1, coord2 = np.unravel_index(argmax, shape=place_conf.shape[1:])
+        p1_pix = np.stack([coord0, coord1], axis=1)
+        p1_theta = coord2 * (2 * np.pi / place_conf.shape[3])
+        assert p1_pix.shape[0] == p1_theta.shape[0] == 1
+        p1_pix = p1_pix[0]
+        p1_theta = p1_theta[0]
 
         # Pixels to end effector poses.
         hmap = img[:, :, 3]

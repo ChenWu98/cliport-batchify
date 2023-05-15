@@ -5,6 +5,7 @@ import pickle
 import warnings
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
 from cliport import tasks
@@ -143,6 +144,18 @@ class RavensDataset(Dataset):
                     obs = {'color': color[i], 'depth': depth[i]} if images else {}
                     episode.append((obs, action[i], reward[i], info[i]))
                 return episode, seed
+    
+    def get_label(self, p, theta, inp_img, n_rotations):
+        theta_i = theta / (2 * np.pi / n_rotations)
+        theta_i = np.int32(np.round(theta_i)) % n_rotations
+        label_size = inp_img.shape[:2] + (n_rotations,)  
+        label = np.zeros(label_size)
+        label[p[0], p[1], theta_i] = 1
+        label = label.transpose((2, 0, 1))
+        label = label.reshape(-1)
+        label = torch.from_numpy(label.copy()).to(dtype=torch.float)
+        
+        return label
 
     def get_image(self, obs, cam_config=None):
         """Stack color and height images image."""
@@ -179,20 +192,30 @@ class RavensDataset(Dataset):
             p0_xyz, p0_xyzw = act['pose0']
             p1_xyz, p1_xyzw = act['pose1']
             p0 = utils.xyz_to_pix(p0_xyz, self.bounds, self.pix_size)
+            p0 = np.array(p0, dtype=np.int32)
             p0_theta = -np.float32(utils.quatXYZW_to_eulerXYZ(p0_xyzw)[2])
             p1 = utils.xyz_to_pix(p1_xyz, self.bounds, self.pix_size)
+            p1 = np.array(p1, dtype=np.int32)
             p1_theta = -np.float32(utils.quatXYZW_to_eulerXYZ(p1_xyzw)[2])
+            # TODO: this assumes that the pick is always the same direction. 
             p1_theta = p1_theta - p0_theta
             p0_theta = 0
 
         # Data augmentation.
         if augment:
             img, _, (p0, p1), perturb_params = utils.perturb(img, [p0, p1], theta_sigma=self.aug_theta_sigma)
-
+        
+        attn_label, transport_label = None, None
+        if act:
+            attn_label = self.get_label(p0, p0_theta, img, self.cfg['train']['n_rotations_pick'])
+            transport_label = self.get_label(p1, p1_theta, img, self.cfg['train']['n_rotations'])
+        
         sample = {
-            'img': img,
-            'p0': p0, 'p0_theta': p0_theta,
-            'p1': p1, 'p1_theta': p1_theta,
+            'img': torch.from_numpy(img).to(dtype=torch.float),
+            'p0': torch.from_numpy(p0.copy()) if p0 else None, 'p0_theta': p0_theta,  # TODO: batch
+            'p1': torch.from_numpy(p1.copy()) if p0 else None, 'p1_theta': p1_theta,  # TODO: batch
+            'attn_label': attn_label,
+            'transport_label': transport_label,
             'perturb_params': perturb_params
         }
 
@@ -211,18 +234,15 @@ class RavensDataset(Dataset):
         # Get goal sample.
         (obs, act, _, info) = goal
         img = self.get_image(obs)
-
-        p0, p1 = None, None
-        p0_theta, p1_theta = None, None
-
+        
         # Data augmentation with specific params.
         if perturb_params:
             img = utils.apply_perturbation(img, perturb_params)
 
         sample = {
             'img': img,
-            'p0': p0, 'p0_theta': p0_theta,
-            'p1': p1, 'p1_theta': p1_theta,
+            'p0': None, 'p0_theta': None,
+            'p1': None, 'p1_theta': None,
             'perturb_params': perturb_params
         }
 
@@ -241,6 +261,7 @@ class RavensDataset(Dataset):
         return len(self.sample_set)
 
     def __getitem__(self, idx):
+
         # Choose random episode.
         if len(self.sample_set) > 0:
             episode_id = np.random.choice(self.sample_set)

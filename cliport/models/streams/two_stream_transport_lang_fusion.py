@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 import cliport.models as models
 import cliport.models.core.fusion as fusion
@@ -34,23 +35,31 @@ class TwoStreamTransportLangFusion(Transport):
 
     def forward(self, inp_img, p, lang_goal, softmax=True):
         """Forward pass."""
-        img_unprocessed = np.pad(inp_img, self.padding, mode='constant')
-        input_data = img_unprocessed
-        in_shape = (1,) + input_data.shape
-        input_data = input_data.reshape(in_shape)
-        in_tensor = torch.from_numpy(input_data).to(dtype=torch.float, device=self.device)
+        pytorch_padding = tuple([int(x) for x in self.padding[::-1].flatten()])
+        in_tensor = F.pad(inp_img, pytorch_padding, mode='constant')  # [B W H 6]
 
         # Rotation pivot.
-        pv = np.array([p[0], p[1]]) + self.pad_size
+        pv = p + self.pad_size
 
         # Crop before network (default for Transporters CoRL 2020).
         hcrop = self.pad_size
         in_tensor = in_tensor.permute(0, 3, 1, 2)
 
-        crop = in_tensor.repeat(self.n_rotations, 1, 1, 1)
-        crop = self.rotator(crop, pivot=pv)
-        crop = torch.cat(crop, dim=0)
-        crop = crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
+        crop = self.rotator(
+            x_list=[in_tensor for _ in range(self.n_rotations)], 
+            pivot_list=[pv for _ in range(self.n_rotations)]
+        )
+        B = in_tensor.shape[0]
+        crop = [
+            torch.stack(
+                [
+                    _crop[i, :, pv[i][0]-hcrop:pv[i][0]+hcrop, pv[i][1]-hcrop:pv[i][1]+hcrop]
+                    for i in range(B)
+                ]
+            )
+            for _crop in crop
+        ]
+        crop = torch.cat(crop, dim=0)  # [R * B 6 2h 2h]
 
         logits, kernel = self.transport(in_tensor, crop, lang_goal)
 
@@ -64,8 +73,20 @@ class TwoStreamTransportLangFusion(Transport):
         # hcrop = self.pad_size
         # kernel = crop[:, :, pv[0]-hcrop:pv[0]+hcrop, pv[1]-hcrop:pv[1]+hcrop]
 
-        return self.correlate(logits, kernel, softmax)
+        if False:
+            output1 = []
+            kernel = kernel.reshape(self.n_rotations, B, *kernel.shape[1:])
+            for b in range(B):
+                output1.append(self.correlate(logits[b].unsqueeze(0), kernel[:, b], softmax))
+            output1 = torch.cat(output1, dim=0)
+        else:
+            output = self.batch_correlate(logits, kernel, softmax)
 
+        # print("consistency check")
+        # print("output.mean()", (output * 10000).mean())
+        # print("output1.mean()", (output1 * 10000).mean())
+        # print("diff", (output * 10000 - output1 * 10000).mean())
+        return output  # [B R W H]
 
 class TwoStreamTransportLangFusionLat(TwoStreamTransportLangFusion):
     """Two Stream Transport (a.k.a Place) module with lateral connections"""

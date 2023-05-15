@@ -17,6 +17,7 @@ from cliport.environments.environment import Environment
 def main(vcfg):
     # Load train cfg
     tcfg = utils.load_hydra_config(vcfg['train_config'])
+    print(print(f"config: {tcfg}"))
 
     # Initialize environment and task.
     env = Environment(

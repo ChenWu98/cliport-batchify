@@ -31,9 +31,13 @@ class CLIPLingUNetLat(nn.Module):
         self._build_decoder()
 
     def _load_clip(self):
-        model, _ = load_clip("RN50", device=self.device)
-        self.clip_rn50 = build_model(model.state_dict()).to(self.device)
-        del model
+        jit = False
+        if jit:
+            model, _ = load_clip("RN50", device=self.device, jit=True)
+            self.clip_rn50 = build_model(model.state_dict()).to(self.device)
+            del model
+        else:
+            self.clip_rn50, _ = load_clip("RN50", device=self.device, jit=False)
 
     def _build_decoder(self):
         # language
@@ -92,7 +96,7 @@ class CLIPLingUNetLat(nn.Module):
 
     def encode_text(self, x):
         with torch.no_grad():
-            tokens = tokenize([x]).to(self.device)
+            tokens = tokenize(x).to(self.device)
             text_feat, text_emb = self.clip_rn50.encode_text_with_embeddings(tokens)
 
         text_mask = torch.where(tokens==0, tokens, 1)  # [1, max_token_len]

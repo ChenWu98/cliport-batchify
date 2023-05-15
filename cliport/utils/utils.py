@@ -570,22 +570,28 @@ class ImageRotator:
             theta = i * 2 * 180 / n_rotations
             self.angles.append(theta)
 
-    def __call__(self, x_list, pivot, reverse=False):
+    def __call__(self, x_list, pivot_list, reverse=False):
+        assert len(x_list) == len(self.angles)
+        B = x_list[0].shape[0]
+        assert all([x.shape[0] == B for x in x_list])
+        if pivot_list[0].dim() == 1:
+            pivot_list = [pivot.repeat(B, 1) for pivot in pivot_list]
+        else:
+            assert all([pivot.shape[0] == B for pivot in pivot_list])
         rot_x_list = []
         for i, angle in enumerate(self.angles):
-            x = x_list[i].unsqueeze(0)
-
+            x = x_list[i]  # B, C, H, W
+            pivot = pivot_list[i]  # B, 2
+            
             # create transformation (rotation)
             alpha: float = angle if not reverse else (-1.0 * angle)  # in degrees
-            angle: torch.tensor = torch.ones(1) * alpha
+            angle: torch.tensor = torch.ones(B).to(x.device) * alpha
 
             # define the rotation center
-            center: torch.tensor = torch.ones(1, 2)
-            center[..., 0] = pivot[1]
-            center[..., 1] = pivot[0]
+            center = torch.stack([pivot[:, 1], pivot[:, 0]], dim=1).float()  # B, 2
 
             # define the scale factor
-            scale: torch.tensor = torch.ones(1, 2)
+            scale: torch.tensor = torch.ones(B, 2).to(x.device)
 
             # compute the transformation matrix
             M: torch.tensor = kornia.get_rotation_matrix2d(center, angle, scale)
