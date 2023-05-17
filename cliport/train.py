@@ -79,6 +79,7 @@ def main(cfg):
     agent_type = cfg['train']['agent']
     n_demos = cfg['train']['n_demos']
     n_val = cfg['train']['n_val']
+    batch_size = cfg['train']['batch_size']
     name = '{}-{}-{}'.format(task, agent_type, n_demos)
 
     # Datasets
@@ -93,7 +94,7 @@ def main(cfg):
         train_ds = RavensDataset(os.path.join(data_dir, '{}-train'.format(task)), cfg, n_demos=n_demos, augment=True)
         val_ds = RavensDataset(os.path.join(data_dir, '{}-val'.format(task)), cfg, n_demos=n_val, augment=False)
         
-    train_loader = DataLoader(train_ds, batch_size=4, collate_fn=collate_fn, num_workers=32)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, collate_fn=collate_fn, num_workers=32)
     val_loader = DataLoader(val_ds, collate_fn=collate_fn, num_workers=8)
 
     # Initialize agent
