@@ -212,8 +212,8 @@ class RavensDataset(Dataset):
         
         sample = {
             'img': torch.from_numpy(img).to(dtype=torch.float),
-            'p0': torch.from_numpy(p0.copy()) if p0 else None, 'p0_theta': p0_theta,  # TODO: batch
-            'p1': torch.from_numpy(p1.copy()) if p0 else None, 'p1_theta': p1_theta,  # TODO: batch
+            'p0': torch.from_numpy(p0.copy()) if p0 is not None else None, 'p0_theta': p0_theta,  # TODO: batch
+            'p1': torch.from_numpy(p1.copy()) if p1 is not None else None, 'p1_theta': p1_theta,  # TODO: batch
             'attn_label': attn_label,
             'transport_label': transport_label,
             'perturb_params': perturb_params
